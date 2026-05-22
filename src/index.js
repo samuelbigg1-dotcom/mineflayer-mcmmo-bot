@@ -5,9 +5,9 @@ const mineflayer = require('mineflayer');
 const DEFAULT_PASSWORD = '12345!';
 const COMMAND_DELAY_MS = 1600;
 const HUMAN_NAMES = [
-  'Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey', 'Riley', 'Jamie', 'Cameron',
-  'Drew', 'Logan', 'Parker', 'Avery', 'Quinn', 'Reese', 'Skyler', 'Hayden',
-  'Mason', 'Blake', 'Noah', 'Evan', 'Liam', 'Owen', 'Eli', 'Nolan'
+  'A45x', 'Jo5rdan', 'Tayl2or', 'Mo2gan', 'Casey', 'Riley', 'Ja2ie', 'Cam0ron',
+  'Dr2w', 'Log8an', 'Par0ker', 'Av1ery', 'Qui4nn', 'R5ese', 'Skyler', 'Ha9den',
+  'M1son', 'Bl7ake', 'N9oah', 'Ev2an', 'L3iam', 'O6wen', 'E7i', 'N8an'
 ];
 
 const config = {
