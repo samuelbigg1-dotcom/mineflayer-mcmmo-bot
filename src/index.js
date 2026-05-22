@@ -28,7 +28,8 @@ const config = {
 };
 
 const runners = [];
-let nextConnectAt = 0;
+let nextLaunchConnectAt = 0;
+let nextReconnectConnectAt = 0;
 
 function main() {
   const botCount = Math.max(1, config.botCount);
@@ -38,20 +39,28 @@ function main() {
   for (let index = 0; index < botCount; index += 1) {
     const runner = createBotRunner(index + 1);
     runners.push(runner);
-    scheduleConnect(runner, 0);
+    scheduleConnect(runner, 0, 'launch');
   }
 }
 
-function scheduleConnect(runner, delayMs) {
+function scheduleConnect(runner, delayMs, queueName) {
   const now = Date.now();
   const earliest = now + Math.max(0, delayMs);
-  const scheduledAt = Math.max(earliest, nextConnectAt);
+  const nextAt = queueName === 'reconnect' ? nextReconnectConnectAt : nextLaunchConnectAt;
+  const scheduledAt = Math.max(earliest, nextAt);
 
-  nextConnectAt = scheduledAt + Math.max(0, config.launchIntervalMs);
+  if (queueName === 'reconnect') {
+    nextReconnectConnectAt = scheduledAt + Math.max(0, config.launchIntervalMs);
+  } else {
+    nextLaunchConnectAt = scheduledAt + Math.max(0, config.launchIntervalMs);
+  }
 
-  setTimeout(runner.connect, scheduledAt - now);
+  const timer = setTimeout(runner.connect, scheduledAt - now);
 
-  return Math.ceil((scheduledAt - now) / 1000);
+  return {
+    delaySeconds: Math.ceil((scheduledAt - now) / 1000),
+    timer
+  };
 }
 
 function createBotRunner(slot) {
@@ -115,8 +124,9 @@ function createBotRunner(slot) {
       clearTimeout(authFallbackTimer);
 
       if (config.reconnect) {
-        const delaySeconds = scheduleConnect(api, config.reconnectDelaySeconds * 1000);
-        console.log(`[${label}] reconnect ${delaySeconds}s`);
+        const scheduled = scheduleConnect(api, config.reconnectDelaySeconds * 1000, 'reconnect');
+        reconnectTimer = scheduled.timer;
+        console.log(`[${label}] reconnect ${scheduled.delaySeconds}s`);
       } else {
         console.log(`[${label}] disconnected`);
       }
