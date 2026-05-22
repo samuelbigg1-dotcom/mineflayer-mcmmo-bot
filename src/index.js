@@ -4,22 +4,34 @@ const mineflayer = require('mineflayer');
 
 const DEFAULT_PASSWORD = '12345!';
 const COMMAND_DELAY_MS = 1600;
+const DEFAULT_VERSIONS = ['1.8.9', '1.9', '1.9.1', '1.9.2', '1.9.3', '1.9.4'];
 const HUMAN_NAMES = [
-  'A45x', 'Jo5rdan', 'Tayl2or', 'Mo2gan', 'Casey', 'Riley', 'Ja2ie', 'Cam0ron',
-  'Dr2w', 'Log8an', 'Par0ker', 'Av1ery', 'Qui4nn', 'R5ese', 'Skyler', 'Ha9den',
-  'M1son', 'Bl7ake', 'N9oah', 'Ev2an', 'L3iam', 'O6wen', 'E7i', 'N8an'
+  'Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey', 'Riley', 'Jamie', 'Cameron',
+  'Drew', 'Logan', 'Parker', 'Avery', 'Quinn', 'Reese', 'Skyler', 'Hayden',
+  'Mason', 'Blake', 'Noah', 'Evan', 'Liam', 'Owen', 'Eli', 'Nolan',
+  'Wyatt', 'Caleb', 'Lucas', 'Miles', 'Rowan', 'Finn', 'Arden', 'Emery',
+  'Harper', 'Sawyer', 'Dakota', 'Kendall', 'Sage', 'River', 'Phoenix', 'Kai',
+  'Remy', 'Tatum', 'Ari', 'Jules', 'Ellis', 'Shawn', 'Micah', 'Devon',
+  'Kieran', 'Lane', 'Robin', 'Sidney', 'Terry', 'Marley', 'Kody', 'Toby',
+  'Bryce', 'Cole', 'Grant', 'Jesse', 'Reid', 'Tanner', 'Weston', 'Zane',
+  'Ashton', 'Brett', 'Corey', 'Dylan', 'Gavin', 'Hudson', 'Jonah', 'Keaton',
+  'Luca', 'Maddox', 'Orion', 'Porter', 'Ryder', 'Silas', 'Tristan', 'Wade',
+  'Briar', 'Cedar', 'Flint', 'Hollis', 'Indigo', 'Jaden', 'Lennox', 'Marlow',
+  'Oakley', 'Peyton', 'Rory', 'Sterling', 'Vaughn', 'Wren', 'Yarden', 'Zephyr'
 ];
 
 const config = {
   host: process.env.BOT_HOST || 'mc.cosmicmc.com',
   port: intFromEnv('BOT_PORT', 25565),
-  version: process.env.BOT_VERSION || '1.9.4',
+  versions: versionsFromEnv(),
   auth: process.env.BOT_AUTH || 'offline',
   username: process.env.BOT_USERNAME || '',
   usernamePrefix: process.env.BOT_USERNAME_PREFIX || '',
   password: process.env.BOT_PASSWORD || DEFAULT_PASSWORD,
   botCount: intFromEnv('BOT_COUNT', 10800),
-  launchIntervalMs: intFromEnv('BOT_LAUNCH_INTERVAL_MS', 50),
+  botBatchSize: Math.max(1, intFromEnv('BOT_BATCH_SIZE', 25)),
+  launchIntervalMs: intFromEnv('BOT_LAUNCH_INTERVAL_MS', 3000),
+  authStepDelayMs: intFromEnv('AUTH_STEP_DELAY_MS', 3000),
   autoMcmmo: boolFromEnv('AUTO_MCMMO', boolFromEnv('AUTO_MCMO', true)),
   authFallbackSeconds: intFromEnv('AUTH_FALLBACK_SECONDS', 10),
   reconnect: boolFromEnv('RECONNECT', true),
@@ -43,13 +55,15 @@ console.error = (...args) => {
 };
 
 const runners = [];
-let nextLaunchConnectAt = 0;
-let nextReconnectConnectAt = 0;
+const launchQueue = createConnectQueue();
+const reconnectQueue = createConnectQueue();
 
 function main() {
   const botCount = Math.max(1, config.botCount);
 
-  console.log(`[fleet] starting ${botCount} bots; interval=${config.launchIntervalMs}ms; reconnect=${config.reconnectDelaySeconds}s`);
+  console.log(
+    `[fleet] starting ${botCount} bots; batch=${config.botBatchSize}; interval=${config.launchIntervalMs}ms; versions=${config.versions.join(',')}`
+  );
 
   for (let index = 0; index < botCount; index += 1) {
     const runner = createBotRunner(index + 1);
@@ -58,16 +72,34 @@ function main() {
   }
 }
 
+function createConnectQueue() {
+  return {
+    nextAt: 0,
+    usedInBatch: 0
+  };
+}
+
 function scheduleConnect(runner, delayMs, queueName) {
   const now = Date.now();
   const earliest = now + Math.max(0, delayMs);
-  const nextAt = queueName === 'reconnect' ? nextReconnectConnectAt : nextLaunchConnectAt;
-  const scheduledAt = Math.max(earliest, nextAt);
+  const queue = queueName === 'reconnect' ? reconnectQueue : launchQueue;
 
-  if (queueName === 'reconnect') {
-    nextReconnectConnectAt = scheduledAt + Math.max(0, config.launchIntervalMs);
-  } else {
-    nextLaunchConnectAt = scheduledAt + Math.max(0, config.launchIntervalMs);
+  if (queue.nextAt < now) {
+    queue.nextAt = now;
+    queue.usedInBatch = 0;
+  }
+
+  if (queue.nextAt < earliest) {
+    queue.nextAt = earliest;
+    queue.usedInBatch = 0;
+  }
+
+  const scheduledAt = queue.nextAt;
+  queue.usedInBatch += 1;
+
+  if (queue.usedInBatch >= config.botBatchSize) {
+    queue.nextAt = scheduledAt + Math.max(0, config.launchIntervalMs);
+    queue.usedInBatch = 0;
   }
 
   const timer = setTimeout(runner.connect, scheduledAt - now);
@@ -81,12 +113,14 @@ function scheduleConnect(runner, delayMs, queueName) {
 function createBotRunner(slot) {
   const label = `bot-${slot}`;
   const username = makeBotUsername(slot);
+  const botVersion = pickBotVersion(slot);
 
   let bot;
   let commandReadyAt = 0;
   let authFallbackTimer;
   let reconnectTimer;
   let lastKickReason = '';
+  let authSequenceTimers = [];
 
   const state = {
     registered: false,
@@ -100,18 +134,19 @@ function createBotRunner(slot) {
     clearTimeout(reconnectTimer);
     resetState();
 
-    console.log(`[${label}] connect ${username}`);
+    console.log(`[${label}] connect ${username} ${botVersion}`);
 
     bot = mineflayer.createBot({
       host: config.host,
       port: config.port,
       username,
-      version: config.version,
+      version: botVersion,
       auth: config.auth
     });
 
     bot.once('spawn', () => {
       console.log(`[${label}] spawned`);
+      scheduleAuthSequence();
       scheduleAuthFallback();
     });
 
@@ -137,6 +172,7 @@ function createBotRunner(slot) {
 
     bot.on('end', () => {
       clearTimeout(authFallbackTimer);
+      clearAuthSequenceTimers();
 
       if (config.reconnect) {
         const scheduled = scheduleConnect(api, config.reconnectDelaySeconds * 1000, 'reconnect');
@@ -151,19 +187,18 @@ function createBotRunner(slot) {
   function handleChat(rawText) {
     const text = normalize(rawText);
 
-    if (isRegisterPrompt(text)) {
-      sendRegister('server requested registration');
+    if (isRegisterPrompt(text) && config.verboseLogs) {
+      console.log(`[${label} auth] register prompt seen`);
       return;
     }
 
     if (isRegisteredNotice(text)) {
       state.registered = true;
-      sendLogin('registration completed');
       return;
     }
 
-    if (isLoginPrompt(text)) {
-      sendLogin('server requested login');
+    if (isLoginPrompt(text) && config.verboseLogs) {
+      console.log(`[${label} auth] login prompt seen`);
       return;
     }
 
@@ -175,6 +210,25 @@ function createBotRunner(slot) {
     if (isAuthFailure(text)) {
       console.log(`[${label}] auth failed`);
     }
+  }
+
+  function scheduleAuthSequence() {
+    clearAuthSequenceTimers();
+
+    const stepDelay = Math.max(0, config.authStepDelayMs);
+    authSequenceTimers = [
+      setTimeout(() => sendRegister('scheduled after joining'), stepDelay),
+      setTimeout(() => sendLogin('scheduled after register wait'), stepDelay * 2),
+      setTimeout(() => sendMcmmo('scheduled after login wait'), stepDelay * 3)
+    ];
+  }
+
+  function clearAuthSequenceTimers() {
+    for (const timer of authSequenceTimers) {
+      clearTimeout(timer);
+    }
+
+    authSequenceTimers = [];
   }
 
   function sendRegister(reason) {
@@ -191,17 +245,19 @@ function createBotRunner(slot) {
     queueCommand(`/login ${config.password}`, '/login <password>', reason);
   }
 
+  function sendMcmmo(reason) {
+    if (!config.autoMcmmo || state.mcmmoSent) return;
+
+    state.mcmmoSent = true;
+    queueCommand('/mcmmo', '/mcmmo', reason);
+  }
+
   function markAuthenticated(reason) {
     if (state.authenticated) return;
 
     clearTimeout(authFallbackTimer);
     state.authenticated = true;
-    console.log(`[${label}] authenticated`);
-
-    if (config.autoMcmmo && !state.mcmmoSent) {
-      state.mcmmoSent = true;
-      queueCommand('/mcmmo', '/mcmmo', 'entering mcMMO lobby');
-    }
+    console.log(`[${label}] authenticated: ${reason}`);
   }
 
   function queueCommand(command, redactedCommand, reason) {
@@ -247,6 +303,7 @@ function createBotRunner(slot) {
   }
 
   function resetState() {
+    clearAuthSequenceTimers();
     commandReadyAt = 0;
     lastKickReason = '';
     state.registered = false;
@@ -261,6 +318,10 @@ function createBotRunner(slot) {
   };
 
   return api;
+}
+
+function pickBotVersion(slot) {
+  return config.versions[(slot - 1) % config.versions.length];
 }
 
 function makeBotUsername(slot) {
@@ -290,10 +351,11 @@ function makeIndexedUsername(prefix, slot) {
 
 function makeHumanUsername(slot) {
   const baseName = HUMAN_NAMES[(slot - 1) % HUMAN_NAMES.length];
-  const number = (100 + slot + randomInt(0, 899)).toString();
-  const suffix = Math.random().toString(36).slice(2, 4);
+  const slotText = slot.toString(36);
+  const randomText = Math.random().toString(36).slice(2, 5);
+  const number = randomInt(10, 99).toString();
 
-  return `${baseName}${number}${suffix}`.slice(0, 16);
+  return `${baseName}${slotText}${number}${randomText}`.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 16);
 }
 
 function isRegisterPrompt(text) {
@@ -349,6 +411,23 @@ function normalize(value) {
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+function versionsFromEnv() {
+  const versions = listFromEnv('BOT_VERSIONS', DEFAULT_VERSIONS);
+  return versions.length > 0 ? versions : DEFAULT_VERSIONS;
+}
+
+function listFromEnv(name, fallback) {
+  const value = process.env[name];
+  if (!value) return fallback;
+
+  const values = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return values.length > 0 ? values : fallback;
 }
 
 function boolFromEnv(name, fallback) {
