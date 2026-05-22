@@ -35,6 +35,12 @@ const config = {
   launchIntervalMs: intFromEnv('BOT_LAUNCH_INTERVAL_MS', 500),
   joinRegisterDelayMs: intFromEnv('JOIN_REGISTER_DELAY_MS', 5000),
   authStepDelayMs: intFromEnv('AUTH_STEP_DELAY_MS', 3000),
+  authRetryMs: intFromEnv('AUTH_RETRY_MS', 6500),
+  routeRetryMs: intFromEnv('ROUTE_RETRY_MS', 7000),
+  maxAuthAttempts: Math.max(1, intFromEnv('MAX_AUTH_ATTEMPTS', 3)),
+  maxRouteAttempts: Math.max(1, intFromEnv('MAX_ROUTE_ATTEMPTS', 4)),
+  hubCommand: process.env.HUB_COMMAND || '/hub',
+  mcmmoCommand: process.env.MCMMO_COMMAND || '/mcmmo',
   autoMcmmo: boolFromEnv('AUTO_MCMMO', boolFromEnv('AUTO_MCMO', true)),
   authFallbackSeconds: intFromEnv('AUTH_FALLBACK_SECONDS', 10),
   reconnect: boolFromEnv('RECONNECT', true),
@@ -135,10 +141,14 @@ function createBotRunner(slot) {
 
   const state = {
     registered: false,
-    loginSent: false,
-    registerSent: false,
+    loginAttempts: 0,
+    registerAttempts: 0,
+    routeAttempts: 0,
     authenticated: false,
-    mcmmoSent: false
+    routeStarted: false,
+    mcmmoVerified: false,
+    routeStartPosition: null,
+    routeStartDimension: null
   };
 
   function connect() {
@@ -164,6 +174,8 @@ function createBotRunner(slot) {
 
     bot.once('spawn', () => {
       console.log(`[${label}] spawned`);
+      state.routeStartPosition = bot.entity ? bot.entity.position.clone() : null;
+      state.routeStartDimension = bot.game && bot.game.dimension;
       scheduleAuthSequence();
       scheduleAuthFallback();
     });
@@ -205,18 +217,25 @@ function createBotRunner(slot) {
   function handleChat(rawText) {
     const text = normalize(rawText);
 
-    if (isRegisterPrompt(text) && config.verboseLogs) {
-      console.log(`[${label} auth] register prompt seen`);
+    if (isAuthFailure(text)) {
+      console.log(`[${label}] auth failed`);
+      state.authenticated = false;
+      state.routeStarted = false;
+      sendLogin('retry after auth failure');
+      return;
+    }
+
+    if (isRegisterPrompt(text)) {
+      if (config.verboseLogs) {
+        console.log(`[${label} auth] register prompt seen`);
+      }
+      sendRegister('server requested register');
       return;
     }
 
     if (isRegisteredNotice(text)) {
       state.registered = true;
-      return;
-    }
-
-    if (isLoginPrompt(text) && config.verboseLogs) {
-      console.log(`[${label} auth] login prompt seen`);
+      sendLogin('registration confirmed');
       return;
     }
 
@@ -225,8 +244,18 @@ function createBotRunner(slot) {
       return;
     }
 
-    if (isAuthFailure(text)) {
-      console.log(`[${label}] auth failed`);
+    if (isLoginPrompt(text) && !state.mcmmoVerified) {
+      if (config.verboseLogs) {
+        console.log(`[${label} auth] login prompt seen`);
+      }
+      state.authenticated = false;
+      state.routeStarted = false;
+      sendLogin('server requested login');
+      return;
+    }
+
+    if (state.routeStarted && isMcmmoNotice(text)) {
+      markMcmmoVerified('server confirmed route');
     }
   }
 
@@ -236,9 +265,8 @@ function createBotRunner(slot) {
     const registerDelay = Math.max(0, config.joinRegisterDelayMs);
     const stepDelay = Math.max(0, config.authStepDelayMs);
     authSequenceTimers = [
-      setTimeout(() => sendRegister('scheduled after joining'), registerDelay),
-      setTimeout(() => sendLogin('scheduled after register wait'), registerDelay + stepDelay),
-      setTimeout(() => sendMcmmo('scheduled after login wait'), registerDelay + stepDelay * 2)
+      setTimeout(() => sendLogin('scheduled after joining'), registerDelay),
+      setTimeout(() => startMcmmoRoute('scheduled after login wait'), registerDelay + stepDelay)
     ];
   }
 
@@ -251,24 +279,54 @@ function createBotRunner(slot) {
   }
 
   function sendRegister(reason) {
-    if (state.registerSent || state.authenticated) return;
+    if (state.authenticated || state.registerAttempts >= config.maxAuthAttempts) return;
 
-    state.registerSent = true;
+    state.registerAttempts += 1;
     queueCommand(`/register ${config.password} ${config.password}`, '/register <password> <password>', reason);
   }
 
   function sendLogin(reason) {
-    if (state.loginSent || state.authenticated) return;
+    if (state.authenticated || state.loginAttempts >= config.maxAuthAttempts) return;
 
-    state.loginSent = true;
+    state.loginAttempts += 1;
     queueCommand(`/login ${config.password}`, '/login <password>', reason);
+
+    authSequenceTimers.push(setTimeout(() => {
+      if (state.authenticated || state.mcmmoVerified) return;
+
+      markAuthenticated('no auth failure received');
+    }, config.authRetryMs));
   }
 
-  function sendMcmmo(reason) {
-    if (!config.autoMcmmo || state.mcmmoSent) return;
+  function startMcmmoRoute(reason) {
+    if (!config.autoMcmmo || state.mcmmoVerified) return;
+    if (state.routeStarted && state.routeAttempts > 0) return;
 
-    state.mcmmoSent = true;
-    queueCommand('/mcmmo', '/mcmmo', reason);
+    state.routeStarted = true;
+    sendHubThenMcmmo(reason);
+  }
+
+  function sendHubThenMcmmo(reason) {
+    if (!config.autoMcmmo || state.mcmmoVerified) return;
+
+    if (state.routeAttempts >= config.maxRouteAttempts) {
+      console.log(`[${label}] mcmmo route failed after ${state.routeAttempts} attempts`);
+      reconnectSoon();
+      return;
+    }
+
+    state.routeAttempts += 1;
+    state.routeStartPosition = bot && bot.entity ? bot.entity.position.clone() : null;
+    state.routeStartDimension = bot && bot.game ? bot.game.dimension : null;
+
+    if (config.hubCommand) {
+      queueCommand(config.hubCommand, config.hubCommand, `${reason}; hub attempt ${state.routeAttempts}`);
+    }
+
+    authSequenceTimers.push(setTimeout(() => {
+      queueCommand(config.mcmmoCommand, config.mcmmoCommand, `${reason}; mcmmo attempt ${state.routeAttempts}`);
+      authSequenceTimers.push(setTimeout(verifyMcmmoRoute, config.routeRetryMs));
+    }, Math.max(0, config.authStepDelayMs)));
   }
 
   function markAuthenticated(reason) {
@@ -277,6 +335,44 @@ function createBotRunner(slot) {
     clearTimeout(authFallbackTimer);
     state.authenticated = true;
     console.log(`[${label}] authenticated: ${reason}`);
+    startMcmmoRoute('authenticated');
+  }
+
+  function verifyMcmmoRoute() {
+    if (state.mcmmoVerified || !bot || !bot.entity) return;
+
+    const currentPosition = bot.entity.position;
+    const moved = state.routeStartPosition && currentPosition.distanceTo(state.routeStartPosition) > 1;
+    const dimensionChanged = state.routeStartDimension && bot.game && bot.game.dimension !== state.routeStartDimension;
+
+    if (moved || dimensionChanged) {
+      markMcmmoVerified(`verified movement=${Boolean(moved)} dimensionChanged=${Boolean(dimensionChanged)}`);
+      return;
+    }
+
+    console.log(`[${label}] mcmmo not verified; retrying hub/mcmmo`);
+    sendHubThenMcmmo('verification retry');
+  }
+
+  function markMcmmoVerified(reason) {
+    if (state.mcmmoVerified) return;
+
+    state.mcmmoVerified = true;
+    console.log(`[${label}] mcmmo lobby: ${reason}`);
+  }
+
+  function reconnectSoon() {
+    if (!bot) return;
+
+    try {
+      bot.quit();
+    } catch {
+      try {
+        bot.end();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   function queueCommand(command, redactedCommand, reason) {
@@ -312,7 +408,7 @@ function createBotRunner(slot) {
     if (config.authFallbackSeconds <= 0) return;
 
     authFallbackTimer = setTimeout(() => {
-      if (state.authenticated || state.loginSent || state.registerSent) return;
+      if (state.authenticated || state.loginAttempts > 0 || state.registerAttempts > 0) return;
 
       if (config.verboseLogs) {
         console.log(`[${label} auth] login fallback`);
@@ -326,10 +422,14 @@ function createBotRunner(slot) {
     commandReadyAt = 0;
     lastKickReason = '';
     state.registered = false;
-    state.loginSent = false;
-    state.registerSent = false;
+    state.loginAttempts = 0;
+    state.registerAttempts = 0;
+    state.routeAttempts = 0;
     state.authenticated = false;
-    state.mcmmoSent = false;
+    state.routeStarted = false;
+    state.mcmmoVerified = false;
+    state.routeStartPosition = null;
+    state.routeStartDimension = null;
   }
 
   const api = {
@@ -644,6 +744,16 @@ function isAuthFailure(text) {
     /incorrect password/.test(text) ||
     /invalid password/.test(text) ||
     /login failed/.test(text)
+  );
+}
+
+function isMcmmoNotice(text) {
+  return (
+    /mcmmo/.test(text) ||
+    /lobby/.test(text) ||
+    /teleport/.test(text) ||
+    /sending/.test(text) ||
+    /connecting/.test(text)
   );
 }
 
