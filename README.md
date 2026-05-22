@@ -1,6 +1,6 @@
 # Mineflayer mcMMO Bot
 
-Mineflayer bot scaffold for Minecraft 1.9-family servers. It joins with a unique offline-mode username, watches chat for register/login prompts, sends the configured password, and enters `/mcmmo` after login succeeds.
+Mineflayer bot scaffold for Minecraft 1.9-family servers. It starts a configurable fleet of bots with unique offline-mode usernames, watches chat for register/login prompts, sends the configured password, and enters `/mcmmo` after login succeeds.
 
 Only run automation on servers where you have permission to do so.
 
@@ -29,17 +29,20 @@ BOT_VERSION=1.9.4
 BOT_AUTH=offline
 BOT_USERNAME_PREFIX=MCMmoBot
 BOT_PASSWORD=12345!
+BOT_COUNT=50
+BOT_LAUNCH_INTERVAL_MS=1000
 AUTO_MCMMO=true
 AUTH_FALLBACK_SECONDS=10
 RECONNECT=true
 RECONNECT_DELAY_SECONDS=60
+RECONNECT_JITTER_SECONDS=30
 ```
 
-`BOT_USERNAME` can be set to force a specific username. If omitted, the bot creates a unique username from `BOT_USERNAME_PREFIX` on every run.
+`BOT_USERNAME` can be set to force a specific username when `BOT_COUNT=1`. With multiple bots, it is used as the base prefix. If omitted, each bot creates a unique username from `BOT_USERNAME_PREFIX`.
 
 ## Flow
 
-1. Connect to the server as a unique offline-mode bot.
+1. Start `BOT_COUNT` bots, staggered by `BOT_LAUNCH_INTERVAL_MS`.
 2. Wait for chat prompts.
 3. Send `/register <password> <password>` if registration is requested.
 4. Send `/login <password>` when registration completes or login is requested.
