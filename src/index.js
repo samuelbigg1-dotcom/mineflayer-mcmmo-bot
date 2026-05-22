@@ -31,6 +31,7 @@ const config = {
   botCount: intFromEnv('BOT_COUNT', 10800),
   botBatchSize: Math.max(1, intFromEnv('BOT_BATCH_SIZE', 25)),
   launchIntervalMs: intFromEnv('BOT_LAUNCH_INTERVAL_MS', 3000),
+  joinRegisterDelayMs: intFromEnv('JOIN_REGISTER_DELAY_MS', 5000),
   authStepDelayMs: intFromEnv('AUTH_STEP_DELAY_MS', 3000),
   autoMcmmo: boolFromEnv('AUTO_MCMMO', boolFromEnv('AUTO_MCMO', true)),
   authFallbackSeconds: intFromEnv('AUTH_FALLBACK_SECONDS', 10),
@@ -62,7 +63,7 @@ function main() {
   const botCount = Math.max(1, config.botCount);
 
   console.log(
-    `[fleet] starting ${botCount} bots; batch=${config.botBatchSize}; interval=${config.launchIntervalMs}ms; versions=${config.versions.join(',')}`
+    `[fleet] starting ${botCount} bots; batch=${config.botBatchSize}; interval=${config.launchIntervalMs}ms; registerDelay=${config.joinRegisterDelayMs}ms; versions=${config.versions.join(',')}`
   );
 
   for (let index = 0; index < botCount; index += 1) {
@@ -215,11 +216,12 @@ function createBotRunner(slot) {
   function scheduleAuthSequence() {
     clearAuthSequenceTimers();
 
+    const registerDelay = Math.max(0, config.joinRegisterDelayMs);
     const stepDelay = Math.max(0, config.authStepDelayMs);
     authSequenceTimers = [
-      setTimeout(() => sendRegister('scheduled after joining'), stepDelay),
-      setTimeout(() => sendLogin('scheduled after register wait'), stepDelay * 2),
-      setTimeout(() => sendMcmmo('scheduled after login wait'), stepDelay * 3)
+      setTimeout(() => sendRegister('scheduled after joining'), registerDelay),
+      setTimeout(() => sendLogin('scheduled after register wait'), registerDelay + stepDelay),
+      setTimeout(() => sendMcmmo('scheduled after login wait'), registerDelay + stepDelay * 2)
     ];
   }
 
