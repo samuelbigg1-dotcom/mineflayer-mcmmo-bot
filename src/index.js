@@ -18,7 +18,7 @@ const config = {
   username: process.env.BOT_USERNAME || '',
   usernamePrefix: process.env.BOT_USERNAME_PREFIX || '',
   password: process.env.BOT_PASSWORD || DEFAULT_PASSWORD,
-  botCount: intFromEnv('BOT_COUNT', 1000),
+  botCount: intFromEnv('BOT_COUNT', 10800),
   launchIntervalMs: intFromEnv('BOT_LAUNCH_INTERVAL_MS', 50),
   autoMcmmo: boolFromEnv('AUTO_MCMMO', boolFromEnv('AUTO_MCMO', true)),
   authFallbackSeconds: intFromEnv('AUTH_FALLBACK_SECONDS', 10),
