@@ -16,7 +16,7 @@ The default target is `mc.cosmicmc.com:25565`. By default each bot rotates throu
 
 ## Railway
 
-Railway runs this as a worker process with `npm start`. Set the same configuration keys in the Railway service variables. For the current batching behavior, make sure Railway uses `BOT_BATCH_SIZE=25`, `BOT_LAUNCH_INTERVAL_MS=3000`, `AUTH_STEP_DELAY_MS=3000`, and `BOT_VERSIONS=1.8.9,1.9,1.9.1,1.9.2,1.9.3,1.9.4`.
+Railway runs this as a worker process with `npm start`. Set the same configuration keys in the Railway service variables. For the current batching behavior, make sure Railway uses `BOT_BATCH_SIZE=25`, `BOT_LAUNCH_INTERVAL_MS=3000`, `JOIN_REGISTER_DELAY_MS=5000`, `AUTH_STEP_DELAY_MS=3000`, and `BOT_VERSIONS=1.8.9,1.9,1.9.1,1.9.2,1.9.3,1.9.4`.
 
 ## Configuration
 
@@ -32,6 +32,7 @@ BOT_PASSWORD=12345!
 BOT_COUNT=100
 BOT_BATCH_SIZE=25
 BOT_LAUNCH_INTERVAL_MS=3000
+JOIN_REGISTER_DELAY_MS=5000
 AUTH_STEP_DELAY_MS=3000
 AUTO_MCMMO=true
 AUTH_FALLBACK_SECONDS=10
@@ -48,8 +49,8 @@ VERBOSE_LOGS=false
 
 1. Start `BOT_COUNT` bots through a batched connection queue.
 2. Join `BOT_BATCH_SIZE` bots every `BOT_LAUNCH_INTERVAL_MS` milliseconds.
-3. After each bot spawns, wait `AUTH_STEP_DELAY_MS`, then send `/register <password> <password>`.
-4. Wait another `AUTH_STEP_DELAY_MS`, then send `/login <password>`.
+3. After each bot spawns, wait `JOIN_REGISTER_DELAY_MS`, then send `/register <password> <password>`.
+4. Wait `AUTH_STEP_DELAY_MS`, then send `/login <password>`.
 5. Wait another `AUTH_STEP_DELAY_MS`, then send `/mcmmo` when `AUTO_MCMMO=true`.
 
 The command queue spaces chat commands out to avoid sending multiple auth commands in the same tick.
