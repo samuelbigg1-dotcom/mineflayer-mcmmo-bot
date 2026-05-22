@@ -176,13 +176,17 @@ function createBotRunner(slot) {
     console.log(`[${label} cmd] ${redactedCommand} queued: ${reason}`);
 
     setTimeout(() => {
-      if (!bot || !bot.player) {
+      if (!bot || typeof bot.chat !== 'function') {
         console.log(`[${label} cmd] ${redactedCommand} skipped: bot is not in game`);
         return;
       }
 
-      bot.chat(command);
-      console.log(`[${label} cmd] ${redactedCommand} sent`);
+      try {
+        bot.chat(command);
+        console.log(`[${label} cmd] ${redactedCommand} sent`);
+      } catch (err) {
+        console.log(`[${label} cmd] ${redactedCommand} failed: ${err.message}`);
+      }
     }, delay);
   }
 
