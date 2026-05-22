@@ -14,13 +14,15 @@ const config = {
   password: process.env.BOT_PASSWORD || DEFAULT_PASSWORD,
   autoMcmmo: boolFromEnv('AUTO_MCMMO', boolFromEnv('AUTO_MCMO', true)),
   authFallbackSeconds: intFromEnv('AUTH_FALLBACK_SECONDS', 10),
-  reconnect: boolFromEnv('RECONNECT', true)
+  reconnect: boolFromEnv('RECONNECT', true),
+  reconnectDelaySeconds: intFromEnv('RECONNECT_DELAY_SECONDS', 60)
 };
 
 let bot;
 let commandReadyAt = 0;
 let authFallbackTimer;
 let reconnectTimer;
+let lastKickReason = '';
 
 const state = {
   registered: false,
@@ -62,7 +64,8 @@ function connect() {
   });
 
   bot.on('kicked', (reason) => {
-    console.log(`[bot] Kicked: ${stringifyReason(reason)}`);
+    lastKickReason = stringifyReason(reason);
+    console.log(`[bot] Kicked: ${lastKickReason}`);
   });
 
   bot.on('error', (err) => {
@@ -74,10 +77,19 @@ function connect() {
     console.log('[bot] Disconnected.');
 
     if (config.reconnect) {
-      reconnectTimer = setTimeout(connect, 10000);
-      console.log('[bot] Reconnect scheduled in 10 seconds.');
+      const delaySeconds = getReconnectDelaySeconds();
+      reconnectTimer = setTimeout(connect, delaySeconds * 1000);
+      console.log(`[bot] Reconnect scheduled in ${delaySeconds} seconds.`);
     }
   });
+}
+
+function getReconnectDelaySeconds() {
+  if (/vpn|proxy/i.test(lastKickReason)) {
+    return Math.max(config.reconnectDelaySeconds, 300);
+  }
+
+  return config.reconnectDelaySeconds;
 }
 
 function handleChat(rawText) {
@@ -168,6 +180,7 @@ function scheduleAuthFallback() {
 
 function resetState() {
   commandReadyAt = 0;
+  lastKickReason = '';
   state.registered = false;
   state.loginSent = false;
   state.registerSent = false;

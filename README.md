@@ -32,6 +32,7 @@ BOT_PASSWORD=12345!
 AUTO_MCMMO=true
 AUTH_FALLBACK_SECONDS=10
 RECONNECT=true
+RECONNECT_DELAY_SECONDS=60
 ```
 
 `BOT_USERNAME` can be set to force a specific username. If omitted, the bot creates a unique username from `BOT_USERNAME_PREFIX` on every run.
