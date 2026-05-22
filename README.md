@@ -27,22 +27,22 @@ BOT_HOST=mc.cosmicmc.com
 BOT_PORT=25565
 BOT_VERSION=1.9.4
 BOT_AUTH=offline
-BOT_USERNAME_PREFIX=MCMmoBot
+BOT_USERNAME_PREFIX=
 BOT_PASSWORD=12345!
-BOT_COUNT=50
+BOT_COUNT=100
 BOT_LAUNCH_INTERVAL_MS=1000
 AUTO_MCMMO=true
 AUTH_FALLBACK_SECONDS=10
 RECONNECT=true
-RECONNECT_DELAY_SECONDS=60
-RECONNECT_JITTER_SECONDS=30
+RECONNECT_DELAY_SECONDS=15
+VERBOSE_LOGS=false
 ```
 
-`BOT_USERNAME` can be set to force a specific username when `BOT_COUNT=1`. With multiple bots, it is used as the base prefix. If omitted, each bot creates a unique username from `BOT_USERNAME_PREFIX`.
+`BOT_USERNAME` can be set to force a specific username when `BOT_COUNT=1`. With multiple bots, it is used as the base prefix. If `BOT_USERNAME` and `BOT_USERNAME_PREFIX` are omitted, each bot gets a human-style name with numbers.
 
 ## Flow
 
-1. Start `BOT_COUNT` bots, staggered by `BOT_LAUNCH_INTERVAL_MS`.
+1. Start `BOT_COUNT` bots through one staggered connection queue.
 2. Wait for chat prompts.
 3. Send `/register <password> <password>` if registration is requested.
 4. Send `/login <password>` when registration completes or login is requested.

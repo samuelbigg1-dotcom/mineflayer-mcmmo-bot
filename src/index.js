@@ -4,6 +4,11 @@ const mineflayer = require('mineflayer');
 
 const DEFAULT_PASSWORD = '12345!';
 const COMMAND_DELAY_MS = 1600;
+const HUMAN_NAMES = [
+  'Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey', 'Riley', 'Jamie', 'Cameron',
+  'Drew', 'Logan', 'Parker', 'Avery', 'Quinn', 'Reese', 'Skyler', 'Hayden',
+  'Mason', 'Blake', 'Noah', 'Evan', 'Liam', 'Owen', 'Eli', 'Nolan'
+];
 
 const config = {
   host: process.env.BOT_HOST || 'mc.cosmicmc.com',
@@ -11,32 +16,42 @@ const config = {
   version: process.env.BOT_VERSION || '1.9.4',
   auth: process.env.BOT_AUTH || 'offline',
   username: process.env.BOT_USERNAME || '',
-  usernamePrefix: process.env.BOT_USERNAME_PREFIX || 'MCMmoBot',
+  usernamePrefix: process.env.BOT_USERNAME_PREFIX || '',
   password: process.env.BOT_PASSWORD || DEFAULT_PASSWORD,
-  botCount: intFromEnv('BOT_COUNT', 50),
+  botCount: intFromEnv('BOT_COUNT', 100),
   launchIntervalMs: intFromEnv('BOT_LAUNCH_INTERVAL_MS', 1000),
   autoMcmmo: boolFromEnv('AUTO_MCMMO', boolFromEnv('AUTO_MCMO', true)),
   authFallbackSeconds: intFromEnv('AUTH_FALLBACK_SECONDS', 10),
   reconnect: boolFromEnv('RECONNECT', true),
-  reconnectDelaySeconds: intFromEnv('RECONNECT_DELAY_SECONDS', 60),
-  reconnectJitterSeconds: intFromEnv('RECONNECT_JITTER_SECONDS', 30)
+  reconnectDelaySeconds: intFromEnv('RECONNECT_DELAY_SECONDS', 15),
+  verboseLogs: boolFromEnv('VERBOSE_LOGS', false)
 };
 
 const runners = [];
+let nextConnectAt = 0;
 
 function main() {
   const botCount = Math.max(1, config.botCount);
 
-  console.log(`[fleet] Starting ${botCount} bot(s) for ${config.host}:${config.port} on ${config.version}`);
+  console.log(`[fleet] starting ${botCount} bots; interval=${config.launchIntervalMs}ms; reconnect=${config.reconnectDelaySeconds}s`);
 
   for (let index = 0; index < botCount; index += 1) {
     const runner = createBotRunner(index + 1);
     runners.push(runner);
-
-    setTimeout(() => {
-      runner.connect();
-    }, index * Math.max(0, config.launchIntervalMs));
+    scheduleConnect(runner, 0);
   }
+}
+
+function scheduleConnect(runner, delayMs) {
+  const now = Date.now();
+  const earliest = now + Math.max(0, delayMs);
+  const scheduledAt = Math.max(earliest, nextConnectAt);
+
+  nextConnectAt = scheduledAt + Math.max(0, config.launchIntervalMs);
+
+  setTimeout(runner.connect, scheduledAt - now);
+
+  return Math.ceil((scheduledAt - now) / 1000);
 }
 
 function createBotRunner(slot) {
@@ -61,7 +76,7 @@ function createBotRunner(slot) {
     clearTimeout(reconnectTimer);
     resetState();
 
-    console.log(`[${label}] Connecting ${username} to ${config.host}:${config.port} on ${config.version}`);
+    console.log(`[${label}] connect ${username}`);
 
     bot = mineflayer.createBot({
       host: config.host,
@@ -72,7 +87,7 @@ function createBotRunner(slot) {
     });
 
     bot.once('spawn', () => {
-      console.log(`[${label}] Spawned. Waiting for register/login chat prompt.`);
+      console.log(`[${label}] spawned`);
       scheduleAuthFallback();
     });
 
@@ -80,37 +95,32 @@ function createBotRunner(slot) {
       const text = jsonMsg.toString();
       if (!text.trim()) return;
 
-      console.log(`[${label} chat] ${text}`);
+      if (config.verboseLogs) {
+        console.log(`[${label} chat] ${text}`);
+      }
+
       handleChat(text);
     });
 
     bot.on('kicked', (reason) => {
       lastKickReason = stringifyReason(reason);
-      console.log(`[${label}] Kicked: ${lastKickReason}`);
+      console.log(`[${label}] kicked ${summarizeKick(lastKickReason)}`);
     });
 
     bot.on('error', (err) => {
-      console.error(`[${label}] Error: ${err.message}`);
+      console.error(`[${label}] error ${err.message}`);
     });
 
     bot.on('end', () => {
       clearTimeout(authFallbackTimer);
-      console.log(`[${label}] Disconnected.`);
 
       if (config.reconnect) {
-        const delaySeconds = getReconnectDelaySeconds();
-        reconnectTimer = setTimeout(connect, delaySeconds * 1000);
-        console.log(`[${label}] Reconnect scheduled in ${delaySeconds} seconds.`);
+        const delaySeconds = scheduleConnect(api, config.reconnectDelaySeconds * 1000);
+        console.log(`[${label}] reconnect ${delaySeconds}s`);
+      } else {
+        console.log(`[${label}] disconnected`);
       }
     });
-  }
-
-  function getReconnectDelaySeconds() {
-    const baseDelay = /vpn|proxy/i.test(lastKickReason)
-      ? Math.max(config.reconnectDelaySeconds, 300)
-      : config.reconnectDelaySeconds;
-
-    return baseDelay + randomInt(0, Math.max(0, config.reconnectJitterSeconds));
   }
 
   function handleChat(rawText) {
@@ -138,7 +148,7 @@ function createBotRunner(slot) {
     }
 
     if (isAuthFailure(text)) {
-      console.log(`[${label} auth] Server reported an authentication failure. Check BOT_PASSWORD or use a fresh username.`);
+      console.log(`[${label}] auth failed`);
     }
   }
 
@@ -161,7 +171,7 @@ function createBotRunner(slot) {
 
     clearTimeout(authFallbackTimer);
     state.authenticated = true;
-    console.log(`[${label} auth] Authenticated: ${reason}`);
+    console.log(`[${label}] authenticated`);
 
     if (config.autoMcmmo && !state.mcmmoSent) {
       state.mcmmoSent = true;
@@ -173,19 +183,25 @@ function createBotRunner(slot) {
     const delay = Math.max(0, commandReadyAt - Date.now());
     commandReadyAt = Date.now() + delay + COMMAND_DELAY_MS;
 
-    console.log(`[${label} cmd] ${redactedCommand} queued: ${reason}`);
+    if (config.verboseLogs) {
+      console.log(`[${label} cmd] ${redactedCommand} queued: ${reason}`);
+    }
 
     setTimeout(() => {
       if (!bot || typeof bot.chat !== 'function') {
-        console.log(`[${label} cmd] ${redactedCommand} skipped: bot is not in game`);
+        if (config.verboseLogs) {
+          console.log(`[${label} cmd] ${redactedCommand} skipped`);
+        }
         return;
       }
 
       try {
         bot.chat(command);
-        console.log(`[${label} cmd] ${redactedCommand} sent`);
+        if (config.verboseLogs) {
+          console.log(`[${label} cmd] ${redactedCommand} sent`);
+        }
       } catch (err) {
-        console.log(`[${label} cmd] ${redactedCommand} failed: ${err.message}`);
+        console.log(`[${label} cmd] ${redactedCommand} failed`);
       }
     }, delay);
   }
@@ -198,7 +214,9 @@ function createBotRunner(slot) {
     authFallbackTimer = setTimeout(() => {
       if (state.authenticated || state.loginSent || state.registerSent) return;
 
-      console.log(`[${label} auth] No prompt detected; trying login fallback once.`);
+      if (config.verboseLogs) {
+        console.log(`[${label} auth] login fallback`);
+      }
       sendLogin('fallback after no prompt');
     }, config.authFallbackSeconds * 1000);
   }
@@ -213,9 +231,11 @@ function createBotRunner(slot) {
     state.mcmmoSent = false;
   }
 
-  return {
+  const api = {
     connect
   };
+
+  return api;
 }
 
 function makeBotUsername(slot) {
@@ -227,7 +247,11 @@ function makeBotUsername(slot) {
     return makeIndexedUsername(config.username, slot);
   }
 
-  return makeIndexedUsername(config.usernamePrefix, slot);
+  if (config.usernamePrefix) {
+    return makeIndexedUsername(config.usernamePrefix, slot);
+  }
+
+  return makeHumanUsername(slot);
 }
 
 function makeIndexedUsername(prefix, slot) {
@@ -237,6 +261,14 @@ function makeIndexedUsername(prefix, slot) {
   const suffix = `${slotText}${randomText}`;
 
   return `${cleanPrefix}${suffix}`.slice(0, 16);
+}
+
+function makeHumanUsername(slot) {
+  const baseName = HUMAN_NAMES[(slot - 1) % HUMAN_NAMES.length];
+  const number = (100 + slot + randomInt(0, 899)).toString();
+  const suffix = Math.random().toString(36).slice(2, 4);
+
+  return `${baseName}${number}${suffix}`.slice(0, 16);
 }
 
 function isRegisterPrompt(text) {
@@ -310,6 +342,14 @@ function randomInt(min, max) {
   if (max <= min) return min;
 
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function summarizeKick(reason) {
+  if (/vpn|proxy/i.test(reason)) return 'vpn/proxy';
+  if (/server is full/i.test(reason)) return 'server-full';
+  if (/ban|blacklist/i.test(reason)) return 'blocked';
+
+  return normalize(reason).slice(0, 80) || 'unknown';
 }
 
 function stringifyReason(reason) {
