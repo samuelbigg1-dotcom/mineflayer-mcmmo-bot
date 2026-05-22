@@ -1,5 +1,7 @@
 require('dotenv').config();
 
+const http = require('http');
+const net = require('net');
 const mineflayer = require('mineflayer');
 
 const DEFAULT_PASSWORD = '12345!';
@@ -29,14 +31,16 @@ const config = {
   usernamePrefix: process.env.BOT_USERNAME_PREFIX || '',
   password: process.env.BOT_PASSWORD || DEFAULT_PASSWORD,
   botCount: intFromEnv('BOT_COUNT', 10800),
-  botBatchSize: Math.max(1, intFromEnv('BOT_BATCH_SIZE', 25)),
-  launchIntervalMs: intFromEnv('BOT_LAUNCH_INTERVAL_MS', 3000),
+  botBatchSize: Math.max(1, intFromEnv('BOT_BATCH_SIZE', 5)),
+  launchIntervalMs: intFromEnv('BOT_LAUNCH_INTERVAL_MS', 500),
   joinRegisterDelayMs: intFromEnv('JOIN_REGISTER_DELAY_MS', 5000),
   authStepDelayMs: intFromEnv('AUTH_STEP_DELAY_MS', 3000),
   autoMcmmo: boolFromEnv('AUTO_MCMMO', boolFromEnv('AUTO_MCMO', true)),
   authFallbackSeconds: intFromEnv('AUTH_FALLBACK_SECONDS', 10),
   reconnect: boolFromEnv('RECONNECT', true),
   reconnectDelaySeconds: intFromEnv('RECONNECT_DELAY_SECONDS', 15),
+  proxies: proxiesFromEnv(),
+  proxyConnectTimeoutMs: Math.max(1000, intFromEnv('PROXY_CONNECT_TIMEOUT_MS', 15000)),
   verboseLogs: boolFromEnv('VERBOSE_LOGS', false)
 };
 
@@ -61,10 +65,15 @@ const reconnectQueue = createConnectQueue();
 
 function main() {
   const botCount = Math.max(1, config.botCount);
+  const proxySummary = config.proxies.length > 0 ? `; proxies=${config.proxies.length}` : '';
 
   console.log(
-    `[fleet] starting ${botCount} bots; batch=${config.botBatchSize}; interval=${config.launchIntervalMs}ms; registerDelay=${config.joinRegisterDelayMs}ms; versions=${config.versions.join(',')}`
+    `[fleet] starting ${botCount} bots; batch=${config.botBatchSize}; interval=${config.launchIntervalMs}ms; registerDelay=${config.joinRegisterDelayMs}ms; versions=${config.versions.join(',')}${proxySummary}`
   );
+
+  if (config.proxies.length > 0 && config.proxies.length < botCount) {
+    console.log('[fleet] proxy list is shorter than bot count; proxies will rotate');
+  }
 
   for (let index = 0; index < botCount; index += 1) {
     const runner = createBotRunner(index + 1);
@@ -115,6 +124,7 @@ function createBotRunner(slot) {
   const label = `bot-${slot}`;
   const username = makeBotUsername(slot);
   const botVersion = pickBotVersion(slot);
+  const proxy = pickProxy(slot);
 
   let bot;
   let commandReadyAt = 0;
@@ -135,15 +145,22 @@ function createBotRunner(slot) {
     clearTimeout(reconnectTimer);
     resetState();
 
-    console.log(`[${label}] connect ${username} ${botVersion}`);
+    const proxyLabel = proxy ? ` via ${formatProxyForLog(proxy)}` : '';
+    console.log(`[${label}] connect ${username} ${botVersion}${proxyLabel}`);
 
-    bot = mineflayer.createBot({
+    const botOptions = {
       host: config.host,
       port: config.port,
       username,
       version: botVersion,
       auth: config.auth
-    });
+    };
+
+    if (proxy) {
+      botOptions.connect = (client) => connectViaProxy(client, proxy);
+    }
+
+    bot = mineflayer.createBot(botOptions);
 
     bot.once('spawn', () => {
       console.log(`[${label}] spawned`);
@@ -326,6 +343,229 @@ function pickBotVersion(slot) {
   return config.versions[(slot - 1) % config.versions.length];
 }
 
+function pickProxy(slot) {
+  if (config.proxies.length === 0) return null;
+
+  return config.proxies[(slot - 1) % config.proxies.length];
+}
+
+function connectViaProxy(client, proxy) {
+  if (proxy.protocol === 'http') {
+    connectViaHttpProxy(client, proxy);
+    return;
+  }
+
+  connectViaSocksProxy(client, proxy);
+}
+
+function connectViaHttpProxy(client, proxy) {
+  const requestOptions = {
+    host: proxy.host,
+    port: proxy.port,
+    method: 'CONNECT',
+    path: `${config.host}:${config.port}`,
+    headers: proxyAuthHeaders(proxy)
+  };
+
+  const request = http.request(requestOptions);
+
+  request.setTimeout(config.proxyConnectTimeoutMs, () => {
+    request.destroy(new Error(`proxy timeout ${formatProxyForLog(proxy)}`));
+  });
+
+  request.on('connect', (response, socket) => {
+    if (response.statusCode !== 200) {
+      socket.destroy();
+      client.emit('error', new Error(`proxy CONNECT ${response.statusCode} ${formatProxyForLog(proxy)}`));
+      return;
+    }
+
+    client.setSocket(socket);
+    client.emit('connect');
+  });
+
+  request.on('response', (response) => {
+    response.resume();
+    client.emit('error', new Error(`proxy response ${response.statusCode} ${formatProxyForLog(proxy)}`));
+  });
+
+  request.on('error', (err) => {
+    client.emit('error', err);
+  });
+
+  request.end();
+}
+
+function connectViaSocksProxy(client, proxy) {
+  const socket = net.connect(proxy.port, proxy.host);
+  let settled = false;
+
+  function fail(err) {
+    if (settled) return;
+
+    settled = true;
+    socket.destroy();
+    client.emit('error', err);
+  }
+
+  socket.setTimeout(config.proxyConnectTimeoutMs, () => {
+    fail(new Error(`proxy timeout ${formatProxyForLog(proxy)}`));
+  });
+
+  socket.once('error', fail);
+
+  socket.once('connect', async () => {
+    try {
+      await completeSocks5Handshake(socket, proxy);
+      settled = true;
+      socket.setTimeout(0);
+      socket.removeListener('error', fail);
+      client.setSocket(socket);
+      client.emit('connect');
+    } catch (err) {
+      fail(new Error(`proxy ${formatProxyForLog(proxy)} ${err.message}`));
+    }
+  });
+}
+
+async function completeSocks5Handshake(socket, proxy) {
+  const hasAuth = Boolean(proxy.username || proxy.password);
+  const methods = hasAuth ? [0x00, 0x02] : [0x00];
+
+  socket.write(Buffer.from([0x05, methods.length, ...methods]));
+
+  const methodResponse = await readSocketBytes(socket, 2);
+  if (methodResponse[0] !== 0x05 || methodResponse[1] === 0xff) {
+    throw new Error('SOCKS5 auth method rejected');
+  }
+
+  if (methodResponse[1] === 0x02) {
+    await authenticateSocks5(socket, proxy);
+  } else if (methodResponse[1] !== 0x00) {
+    throw new Error(`unsupported SOCKS5 auth method ${methodResponse[1]}`);
+  }
+
+  socket.write(createSocks5ConnectRequest(config.host, config.port));
+
+  const replyHeader = await readSocketBytes(socket, 4);
+  if (replyHeader[0] !== 0x05) {
+    throw new Error('invalid SOCKS5 reply');
+  }
+
+  if (replyHeader[1] !== 0x00) {
+    throw new Error(`SOCKS5 connect failed ${replyHeader[1]}`);
+  }
+
+  if (replyHeader[3] === 0x01) {
+    await readSocketBytes(socket, 6);
+    return;
+  }
+
+  if (replyHeader[3] === 0x03) {
+    const length = (await readSocketBytes(socket, 1))[0];
+    await readSocketBytes(socket, length + 2);
+    return;
+  }
+
+  if (replyHeader[3] === 0x04) {
+    await readSocketBytes(socket, 18);
+    return;
+  }
+
+  throw new Error(`unsupported SOCKS5 address type ${replyHeader[3]}`);
+}
+
+async function authenticateSocks5(socket, proxy) {
+  const username = Buffer.from(proxy.username);
+  const password = Buffer.from(proxy.password);
+
+  if (username.length > 255 || password.length > 255) {
+    throw new Error('SOCKS5 username/password too long');
+  }
+
+  socket.write(Buffer.concat([
+    Buffer.from([0x01, username.length]),
+    username,
+    Buffer.from([password.length]),
+    password
+  ]));
+
+  const response = await readSocketBytes(socket, 2);
+  if (response[0] !== 0x01 || response[1] !== 0x00) {
+    throw new Error('SOCKS5 username/password rejected');
+  }
+}
+
+function createSocks5ConnectRequest(host, port) {
+  const hostBuffer = Buffer.from(host);
+  if (hostBuffer.length > 255) {
+    throw new Error('SOCKS5 destination host too long');
+  }
+
+  const request = Buffer.alloc(7 + hostBuffer.length);
+  request[0] = 0x05;
+  request[1] = 0x01;
+  request[2] = 0x00;
+  request[3] = 0x03;
+  request[4] = hostBuffer.length;
+  hostBuffer.copy(request, 5);
+  request.writeUInt16BE(port, 5 + hostBuffer.length);
+
+  return request;
+}
+
+function readSocketBytes(socket, size) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let length = 0;
+
+    function cleanup() {
+      socket.removeListener('data', onData);
+      socket.removeListener('error', onError);
+      socket.removeListener('end', onEnd);
+    }
+
+    function onData(chunk) {
+      chunks.push(chunk);
+      length += chunk.length;
+
+      if (length < size) return;
+
+      cleanup();
+      const buffer = Buffer.concat(chunks, length);
+      const remaining = buffer.subarray(size);
+      if (remaining.length > 0) {
+        socket.unshift(remaining);
+      }
+      resolve(buffer.subarray(0, size));
+    }
+
+    function onError(err) {
+      cleanup();
+      reject(err);
+    }
+
+    function onEnd() {
+      cleanup();
+      reject(new Error('proxy socket closed'));
+    }
+
+    socket.on('data', onData);
+    socket.once('error', onError);
+    socket.once('end', onEnd);
+  });
+}
+
+function proxyAuthHeaders(proxy) {
+  if (!proxy.username && !proxy.password) return undefined;
+
+  const token = Buffer.from(`${proxy.username}:${proxy.password}`).toString('base64');
+
+  return {
+    'Proxy-Authorization': `Basic ${token}`
+  };
+}
+
 function makeBotUsername(slot) {
   if (config.username && config.botCount === 1) {
     return config.username;
@@ -418,6 +658,46 @@ function normalize(value) {
 function versionsFromEnv() {
   const versions = listFromEnv('BOT_VERSIONS', DEFAULT_VERSIONS);
   return versions.length > 0 ? versions : DEFAULT_VERSIONS;
+}
+
+function proxiesFromEnv() {
+  const value = process.env.BOT_PROXIES;
+  if (!value) return [];
+
+  return value
+    .split(/[\r\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map(parseProxy);
+}
+
+function parseProxy(value) {
+  const hasProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+  const url = new URL(hasProtocol ? value : `socks5://${value}`);
+  const protocol = url.protocol.replace(':', '').toLowerCase();
+  const port = Number.parseInt(url.port, 10);
+
+  if (!['http', 'socks5'].includes(protocol)) {
+    throw new Error(`Unsupported proxy protocol: ${protocol}`);
+  }
+
+  if (!url.hostname || !Number.isFinite(port)) {
+    throw new Error(`Invalid proxy entry: ${value}`);
+  }
+
+  return {
+    protocol,
+    host: url.hostname,
+    port,
+    username: decodeURIComponent(url.username || ''),
+    password: decodeURIComponent(url.password || '')
+  };
+}
+
+function formatProxyForLog(proxy) {
+  const auth = proxy.username ? `${proxy.username}:***@` : '';
+
+  return `${proxy.protocol}://${auth}${proxy.host}:${proxy.port}`;
 }
 
 function listFromEnv(name, fallback) {
