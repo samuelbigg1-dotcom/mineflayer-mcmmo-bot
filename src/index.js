@@ -27,6 +27,21 @@ const config = {
   verboseLogs: boolFromEnv('VERBOSE_LOGS', false)
 };
 
+const originalConsoleError = console.error.bind(console);
+
+console.error = (...args) => {
+  if (config.verboseLogs) {
+    originalConsoleError(...args);
+    return;
+  }
+
+  const text = args.map(formatLogArg).join(' ');
+  if (/^\s+at\s/.test(text)) return;
+  if (/^\s*(errno|code|syscall):/.test(text)) return;
+
+  originalConsoleError(text);
+};
+
 const runners = [];
 let nextLaunchConnectAt = 0;
 let nextReconnectConnectAt = 0;
@@ -117,7 +132,7 @@ function createBotRunner(slot) {
     });
 
     bot.on('error', (err) => {
-      console.error(`[${label}] error ${err.message}`);
+      console.log(`[${label}] error ${summarizeError(err)}`);
     });
 
     bot.on('end', () => {
@@ -356,10 +371,23 @@ function randomInt(min, max) {
 
 function summarizeKick(reason) {
   if (/vpn|proxy/i.test(reason)) return 'vpn/proxy';
+  if (/logging in too fast/i.test(reason)) return 'rate-limited';
   if (/server is full/i.test(reason)) return 'server-full';
   if (/ban|blacklist/i.test(reason)) return 'blocked';
 
   return normalize(reason).slice(0, 80) || 'unknown';
+}
+
+function summarizeError(err) {
+  return err.code || err.message || String(err);
+}
+
+function formatLogArg(value) {
+  if (value instanceof Error) {
+    return value.code || value.message;
+  }
+
+  return String(value);
 }
 
 function stringifyReason(reason) {
