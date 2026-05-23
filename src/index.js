@@ -91,6 +91,7 @@ const config = {
   mcmmoCommand: process.env.MCMMO_COMMAND || '/mcmmo',
   autoMcmmo: boolFromEnv('AUTO_MCMMO', boolFromEnv('AUTO_MCMO', true)),
   authFallbackSeconds: intFromEnv('AUTH_FALLBACK_SECONDS', 10),
+  logCommands: boolFromEnv('LOG_COMMANDS', true),
   reconnect: boolFromEnv('RECONNECT', true),
   reconnectDelaySeconds: intFromEnv('RECONNECT_DELAY_SECONDS', 15),
   proxies: proxiesFromEnv(),
@@ -313,8 +314,8 @@ function createBotRunner(slot) {
     const registerDelay = Math.max(0, config.joinRegisterDelayMs);
     const stepDelay = Math.max(0, config.authStepDelayMs);
     authSequenceTimers = [
-      setTimeout(() => sendLogin('scheduled after joining'), registerDelay),
-      setTimeout(() => startMcmmoRoute('scheduled after login wait'), registerDelay + stepDelay)
+      setTimeout(() => sendRegister('scheduled after joining'), registerDelay),
+      setTimeout(() => sendLogin('scheduled after register wait'), registerDelay + stepDelay)
     ];
   }
 
@@ -427,7 +428,7 @@ function createBotRunner(slot) {
     const delay = Math.max(0, commandReadyAt - Date.now());
     commandReadyAt = Date.now() + delay + COMMAND_DELAY_MS;
 
-    if (config.verboseLogs) {
+    if (config.logCommands || config.verboseLogs) {
       console.log(`[${label} cmd] ${redactedCommand} queued: ${reason}`);
     }
 
@@ -441,7 +442,7 @@ function createBotRunner(slot) {
 
       try {
         bot.chat(command);
-        if (config.verboseLogs) {
+        if (config.logCommands || config.verboseLogs) {
           console.log(`[${label} cmd] ${redactedCommand} sent`);
         }
       } catch (err) {
